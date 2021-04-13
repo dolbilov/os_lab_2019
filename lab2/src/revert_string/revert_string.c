@@ -15,6 +15,9 @@ void RevertString(char *str)
   {
     Swap(str+i, str+len-i-1);
   }
+<<<<<<< HEAD
   *str = '!';
+=======
+>>>>>>> f51fda16d1b00799e7403b60fd3ba7d76d2eb0f2
 }
 
