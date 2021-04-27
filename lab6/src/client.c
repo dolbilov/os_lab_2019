@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <pthread.h>
 
 #include <errno.h>
 #include <getopt.h>
@@ -12,12 +13,27 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 
+#include "multmodulo.h"
+
+pthread_mutex_t mut = PTHREAD_MUTEX_INITIALIZER;
+int common =1;
+
 struct Server {
   char ip[255];
   int port;
 };
 
-uint64_t MultModulo(uint64_t a, uint64_t b, uint64_t mod) {
+struct AllData
+{
+    uint64_t begin;
+    uint64_t end;
+    uint64_t mod;
+    int *c;
+    char ip[255];
+    uint64_t port;
+};
+
+/*uint64_t MultModulo(uint64_t a, uint64_t b, uint64_t mod) {
   uint64_t result = 0;
   a = a % mod;
   while (b > 0) {
@@ -28,11 +44,11 @@ uint64_t MultModulo(uint64_t a, uint64_t b, uint64_t mod) {
   }
 
   return result % mod;
-}
+}*/
 
 bool ConvertStringToUI64(const char *str, uint64_t *val) {
   char *end = NULL;
-  unsigned long long i = strtoull(str, &end, 10);
+  unsigned long long i = strtoull(str, &end, 10);       //Convert the string to a value of type unsigned long int
   if (errno == ERANGE) {
     fprintf(stderr, "Out of uint64_t range: %s\n", str);
     return false;
@@ -43,6 +59,69 @@ bool ConvertStringToUI64(const char *str, uint64_t *val) {
 
   *val = i;
   return true;
+}
+
+void ServerHanddler(void* data)
+{
+    
+    struct AllData d=*((struct AllData*)data);
+    int f;
+
+    struct hostent *hostname = gethostbyname(d.ip);   //returns a pointer to the hostent structure described above.
+    if (hostname == NULL) {
+      fprintf(stderr, "gethostbyname failed with %s\n",d.ip);
+      exit(1);
+    }
+
+    struct sockaddr_in server;
+    server.sin_family = AF_INET;
+    server.sin_port = htons(d.port);
+    server.sin_addr.s_addr = *((unsigned long *)hostname->h_addr);
+
+    int sck = socket(AF_INET, SOCK_STREAM, 0);
+    if (sck < 0) {
+      fprintf(stderr, "Socket creation failed!\n");
+      exit(1);
+    }
+
+    if (connect(sck, (struct sockaddr *)&server, sizeof(server)) < 0) {
+      fprintf(stderr, "Connection failed\n");
+      exit(1);
+    }
+    char task[sizeof(uint64_t) * 3];
+    printf("begin = %llu, end = %llu, mod = %llu\n",d.begin, d.end, d.mod);
+
+    /*char value[sizeof(uint64_t*)];
+    snprintf(value, sizeof value, "%d", d.begin);
+    write(STDOUT_FILENO, value, strlen(value));*/
+
+    memcpy(task, &(d.begin), sizeof(uint64_t));
+    memcpy(task + sizeof(uint64_t), &(d.end), sizeof(uint64_t));
+    memcpy(task + 2 * sizeof(uint64_t), &(d.mod), sizeof(uint64_t));
+    //printf("begin = %d, end = %d, mod = %d\n",d.begin, d.end, d.mod);
+    //printf("%s",task);
+
+    if (send(sck, task, sizeof(task), 0) < 0) {
+      fprintf(stderr, "Send failed\n");
+      exit(1);
+    }
+
+    char response[sizeof(uint64_t)];
+    if (recv(sck, response, sizeof(response), 0) < 0) {
+      fprintf(stderr, "Recieve failed\n");
+      exit(1);
+    }
+    uint64_t answer = 0;
+    memcpy(&answer, response, sizeof(uint64_t));
+    printf("for calculation from %d to %d recieved result is: %llu\n", d.begin, d.end-1,answer);
+    //-------------------------
+    pthread_mutex_lock(&mut);
+    f=*(d.c);
+    f=MultModulo(f,answer,d.mod);
+    *(d.c) = f;
+     printf("for calculation from %d to %d afer multiplication: %d\n", d.begin, d.end-1,*(d.c));
+    pthread_mutex_unlock(&mut);
+    
 }
 
 int main(int argc, char **argv) {
@@ -70,10 +149,18 @@ int main(int argc, char **argv) {
       case 0:
         ConvertStringToUI64(optarg, &k);
         // TODO: your code here
+            if (k <= 0) {
+                printf("k is a positive number\n");
+                return 1;
+            }
         break;
       case 1:
         ConvertStringToUI64(optarg, &mod);
         // TODO: your code here
+            if (mod <= 0) {
+                printf("mod is a positive number\n");
+                return 1;
+            }
         break;
       case 2:
         // TODO: your code here
@@ -99,15 +186,16 @@ int main(int argc, char **argv) {
   }
 
   // TODO: for one server here, rewrite with servers from file
-  unsigned int servers_num = 1;
+  /*unsigned int servers_num = 1;
   struct Server *to = malloc(sizeof(struct Server) * servers_num);
   // TODO: delete this and parallel work between servers
   to[0].port = 20001;
-  memcpy(to[0].ip, "127.0.0.1", sizeof("127.0.0.1"));
+  memcpy(to[0].ip, "127.0.0.1", sizeof("127.0.0.1"));   //функция стандартной библиотеки языка программирования Си, 
+                                                        //копирующая содержимое одной области памяти в другую.
 
   // TODO: work continiously, rewrite to make parallel
   for (int i = 0; i < servers_num; i++) {
-    struct hostent *hostname = gethostbyname(to[i].ip);
+    struct hostent *hostname = gethostbyname(to[i].ip);   //returns a pointer to the hostent structure described above.
     if (hostname == NULL) {
       fprintf(stderr, "gethostbyname failed with %s\n", to[i].ip);
       exit(1);
@@ -157,8 +245,61 @@ int main(int argc, char **argv) {
     printf("answer: %llu\n", answer);
 
     close(sck);
+  }*/
+
+  //обработка файла (считаем ко-во строк, создаем массив серверов, записываем в него содержание строк)
+  char buffer[255];
+  int servers_num=0;
+  FILE *fp;
+  fp=fopen(servers, "r");
+  while (fgets(buffer, sizeof(buffer), fp))
+  {
+      servers_num++;
+  }
+  fclose(fp);
+
+  struct AllData* to = malloc(sizeof(struct AllData) * servers_num);
+  fp=fopen(servers, "r");
+  int it=0;
+  while (fgets(buffer, sizeof(buffer), fp))
+  {
+    ConvertStringToUI64(buffer,&(to[it].port));
+    memcpy(to[it].ip,"127.0.0.1", sizeof("127.0.0.1"));
+    it++;
+  }
+  fclose(fp);
+
+//создаю массив тредов, потом запускаю каждый из них для функции,
+// которая обрабатывает определенный численный интервал на определенном сервере
+if (servers_num>k)
+    servers_num=k;
+int sizeforthread = servers_num <= k ? (k / servers_num) : 1;
+  pthread_t threads[servers_num];
+  for (uint32_t i = 0; i < servers_num; i++) {
+    to[i].begin = i * sizeforthread + 1;
+    printf("First element in thred %d: %d\n", i, to[i].begin);
+    if (i != (servers_num - 1))
+    {
+        to[i].end = to[i].begin + sizeforthread;
+    }
+    else {
+        to[i].end = k + 1;
+    }
+    printf("Last element in thred %d: %d\n", i,to[i].end - 1);
+    to[i].mod = mod;
+    to[i].c=&common;
+    if (pthread_create(&threads[i], NULL, (void*)ServerHanddler, (void*)&to[i])) {
+        printf("Error: pthread_create failed!\n");
+        return 1;
+    }
+  }
+  for (uint32_t i = 0; i < servers_num; i++) {
+    if (pthread_join(threads[i], NULL) != 0) {
+    perror("pthread_join");
+    exit(1);
+    }
   }
   free(to);
-
+  printf("All done, counter = %d\n", common);
   return 0;
 }
